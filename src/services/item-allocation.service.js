@@ -138,7 +138,6 @@ async function getItemAllocation(payload) {
   if (!hasHistoricalOrders) {
     return {
       isNewCustomer: true,
-      message: "This is a new customer",
     };
   }
 
