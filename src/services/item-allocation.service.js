@@ -1,0 +1,194 @@
+const { listOrders, listOrderProducts } = require("../clients/bigcommerce.client");
+const { createHttpError } = require("../utils/http-error");
+
+const ORDER_PAGE_LIMIT = 250;
+const PRODUCT_FETCH_CONCURRENCY = Number(process.env.BIGCOMMERCE_PRODUCT_FETCH_CONCURRENCY || 8);
+
+function toUtcIsoString(date) {
+  return new Date(date).toISOString().replace(".000", "");
+}
+
+function getPreviousNaturalMonthUtcRange() {
+  const now = new Date();
+  const currentMonthStartUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
+  const previousMonthStartUtc = new Date(
+    Date.UTC(currentMonthStartUtc.getUTCFullYear(), currentMonthStartUtc.getUTCMonth() - 1, 1, 0, 0, 0)
+  );
+
+  return {
+    minDateModified: toUtcIsoString(previousMonthStartUtc),
+    maxDateModified: toUtcIsoString(currentMonthStartUtc),
+  };
+}
+
+function normalizeSizeValue(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function extractItemSize(productLine) {
+  const options = Array.isArray(productLine.product_options) ? productLine.product_options : [];
+
+  for (const option of options) {
+    const name = normalizeSizeValue(option.display_name || option.name || option.option_name);
+    if (name === "size") {
+      return normalizeSizeValue(option.display_value || option.value || option.option_value);
+    }
+  }
+
+  return "";
+}
+
+function validateAndNormalizePayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    throw createHttpError(400, "Request body is required.");
+  }
+
+  const customerId = Number(payload.customerId);
+  if (!Number.isInteger(customerId) || customerId <= 0) {
+    throw createHttpError(400, "customerId must be a positive integer.");
+  }
+
+  if (!Array.isArray(payload.productIds) || payload.productIds.length === 0) {
+    throw createHttpError(400, "productIds must be a non-empty array.");
+  }
+
+  const productIds = [...new Set(payload.productIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+
+  if (productIds.length === 0) {
+    throw createHttpError(400, "productIds must contain valid positive integers.");
+  }
+
+  const sizeSet = new Set(payload.size.map((s) => normalizeSizeValue(s)).filter(Boolean));
+  if (sizeSet.size === 0) {
+    throw createHttpError(400, "size must contain valid size values.");
+  }
+
+  return {
+    customerId,
+    productIds,
+    sizeSet,
+  };
+}
+
+async function hasCustomerHistoricalOrders(customerId) {
+  const firstPage = await listOrders({
+    customerId,
+    page: 1,
+    limit: 1,
+  });
+
+  return firstPage.length > 0;
+}
+
+async function fetchOrdersInRange(minDateModified, maxDateModified, customerId) {
+  const allOrders = [];
+  let page = 1;
+
+  while (true) {
+    const pageOrders = await listOrders({
+      minDateModified,
+      maxDateModified,
+      customerId,
+      page,
+      limit: ORDER_PAGE_LIMIT,
+    });
+
+    allOrders.push(...pageOrders);
+
+    if (pageOrders.length < ORDER_PAGE_LIMIT) {
+      break;
+    }
+
+    page += 1;
+  }
+
+  return allOrders;
+}
+
+function buildAggregateKey(productId, variantId, sku, size) {
+  return `${productId}::${variantId || 0}::${sku || ""}::${size}`;
+}
+
+async function fetchProductsByOrders(orders) {
+  const orderProducts = [];
+
+  for (let i = 0; i < orders.length; i += PRODUCT_FETCH_CONCURRENCY) {
+    const chunk = orders.slice(i, i + PRODUCT_FETCH_CONCURRENCY);
+    const chunkResults = await Promise.all(
+      chunk.map(async (order) => {
+        const products = await listOrderProducts(order.id);
+        return {
+          orderId: order.id,
+          products,
+        };
+      })
+    );
+    orderProducts.push(...chunkResults);
+  }
+
+  return orderProducts;
+}
+
+async function getItemAllocation(payload) {
+  const { customerId, productIds, sizeSet } = validateAndNormalizePayload(payload);
+
+  const hasHistoricalOrders = await hasCustomerHistoricalOrders(customerId);
+  if (!hasHistoricalOrders) {
+    return {
+      isNewCustomer: true,
+      message: "This is a new customer",
+    };
+  }
+
+  const productIdSet = new Set(productIds);
+  const { minDateModified, maxDateModified } = getPreviousNaturalMonthUtcRange();
+  const orders = await fetchOrdersInRange(minDateModified, maxDateModified, customerId);
+
+  if (orders.length === 0) {
+    return [];
+  }
+
+  const orderProducts = await fetchProductsByOrders(orders);
+  const aggregate = new Map();
+
+  for (const { products } of orderProducts) {
+    for (const line of products) {
+      const productId = Number(line.product_id);
+      const lineSize = extractItemSize(line);
+      const matchesProduct = productIdSet.has(productId);
+      const matchesSize = !!lineSize && sizeSet.has(lineSize);
+
+      if (!matchesProduct && !matchesSize) {
+        continue;
+      }
+
+      const quantity = Number(line.quantity || 0);
+      if (!quantity) {
+        continue;
+      }
+
+      const variantId = Number(line.variant_id || 0);
+      const sku = line.sku || "";
+      const key = buildAggregateKey(productId, variantId, sku, lineSize);
+
+      if (!aggregate.has(key)) {
+        aggregate.set(key, {
+          product_Id: productId,
+          variant_Id: variantId,
+          sku,
+          size: lineSize,
+          purchased_quantity: 0,
+        });
+      }
+
+      const current = aggregate.get(key);
+      current.purchased_quantity += quantity;
+    }
+  }
+
+  return Array.from(aggregate.values());
+}
+
+module.exports = {
+  getItemAllocation,
+};
