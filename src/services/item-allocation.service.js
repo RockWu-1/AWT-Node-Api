@@ -58,10 +58,12 @@ function validateAndNormalizePayload(payload) {
     throw createHttpError(400, "productIds must contain valid positive integers.");
   }
 
-  const sizeSet = new Set(payload.size.map((s) => normalizeSizeValue(s)).filter(Boolean));
-  if (sizeSet.size === 0) {
-    throw createHttpError(400, "size must contain valid size values.");
+  if (payload.size !== undefined && !Array.isArray(payload.size)) {
+    throw createHttpError(400, "size must be an array when provided.");
   }
+
+  const rawSizes = Array.isArray(payload.size) ? payload.size : [];
+  const sizeSet = new Set(rawSizes.map((s) => normalizeSizeValue(s)).filter(Boolean));
 
   return {
     customerId,
@@ -154,9 +156,10 @@ async function getItemAllocation(payload) {
   for (const { products } of orderProducts) {
     for (const line of products) {
       const productId = Number(line.product_id);
-      const lineSize = extractItemSize(line);
       const matchesProduct = productIdSet.has(productId);
-      const matchesSize = !!lineSize && sizeSet.has(lineSize);
+      const shouldUseSizeFilter = sizeSet.size > 0;
+      const lineSize = shouldUseSizeFilter ? extractItemSize(line) : "";
+      const matchesSize = shouldUseSizeFilter && !!lineSize && sizeSet.has(lineSize);
 
       if (!matchesProduct && !matchesSize) {
         continue;
