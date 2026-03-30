@@ -8,16 +8,14 @@ function toUtcIsoString(date) {
   return new Date(date).toISOString().replace(".000", "");
 }
 
-function getPreviousNaturalMonthUtcRange() {
+function getLastThirtyDaysUtcRange() {
   const now = new Date();
-  const currentMonthStartUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
-  const previousMonthStartUtc = new Date(
-    Date.UTC(currentMonthStartUtc.getUTCFullYear(), currentMonthStartUtc.getUTCMonth() - 1, 1, 0, 0, 0)
-  );
+  const thirtyDaysAgo = new Date(now);
+  thirtyDaysAgo.setUTCDate(thirtyDaysAgo.getUTCDate() - 30);
 
   return {
-    minDateModified: toUtcIsoString(previousMonthStartUtc),
-    maxDateModified: toUtcIsoString(currentMonthStartUtc),
+    minDateModified: toUtcIsoString(thirtyDaysAgo),
+    maxDateModified: toUtcIsoString(now),
   };
 }
 
@@ -142,7 +140,7 @@ async function getItemAllocation(payload) {
   }
 
   const productIdSet = new Set(productIds);
-  const { minDateModified, maxDateModified } = getPreviousNaturalMonthUtcRange();
+  const { minDateModified, maxDateModified } = getLastThirtyDaysUtcRange();
   const orders = await fetchOrdersInRange(minDateModified, maxDateModified, customerId);
 
   if (orders.length === 0) {
