@@ -28,7 +28,12 @@ npm start
 
 ## API
 
-### `POST /getItemAllocation`
+### `POST /api/getItemAllocation`
+
+Required request headers:
+
+- `store_hash`: BigCommerce store hash
+- `token`: BigCommerce access token
 
 Request body:
 
@@ -42,8 +47,8 @@ Request body:
 
 Behavior:
 
-- Query BigCommerce orders in previous natural month (UTC), i.e. from previous month start 00:00:00Z to current month start 00:00:00Z.
-- Filter by `customerId`.
+- Query BigCommerce orders in the last 30 days (UTC), from now-30d to now.
+- Query orders by `customer_id` directly.
 - Fetch each order's products.
 - Aggregate purchased quantity by `product_id + variant_id + sku + size`.
 - Compare `size` in lowercase.
@@ -51,13 +56,17 @@ Behavior:
 Response format:
 
 ```json
-[
-  {
-    "product_Id": 7885,
-    "variant_Id": 830315,
-    "sku": "CRN-CR3266",
-    "size": "small",
-    "purchased_quantity": 51
-  }
-]
+{
+  "status": 200,
+  "message": "ok",
+  "data": [
+    {
+      "product_Id": 7885,
+      "variant_Id": 830315,
+      "sku": "CRN-CR3266",
+      "size": "small",
+      "purchased_quantity": 51
+    }
+  ]
+}
 ```

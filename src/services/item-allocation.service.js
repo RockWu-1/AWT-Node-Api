@@ -1,4 +1,4 @@
-const { listOrders, listOrderProducts } = require("../clients/bigcommerce.client");
+const { createBigcommerceClient, listOrders, listOrderProducts } = require("../clients/bigcommerce.client");
 const { createHttpError } = require("../utils/http-error");
 
 const ORDER_PAGE_LIMIT = 250;
@@ -70,8 +70,27 @@ function validateAndNormalizePayload(payload) {
   };
 }
 
-async function hasCustomerHistoricalOrders(customerId) {
-  const firstPage = await listOrders({
+function validateAndNormalizeBigcommerceAuth(auth) {
+  if (!auth || typeof auth !== "object") {
+    throw createHttpError(400, "BigCommerce auth headers are required.");
+  }
+
+  const storeHash = String(auth.storeHash || "").trim();
+  const accessToken = String(auth.accessToken || "").trim();
+
+  if (!storeHash) {
+    throw createHttpError(400, "Missing BigCommerce storeHash in request headers.");
+  }
+
+  if (!accessToken) {
+    throw createHttpError(400, "Missing BigCommerce accessToken in request headers.");
+  }
+
+  return { storeHash, accessToken };
+}
+
+async function hasCustomerHistoricalOrders(client, customerId) {
+  const firstPage = await listOrders(client, {
     customerId,
     page: 1,
     limit: 1,
@@ -80,12 +99,12 @@ async function hasCustomerHistoricalOrders(customerId) {
   return firstPage.length > 0;
 }
 
-async function fetchOrdersInRange(minDateModified, maxDateModified, customerId) {
+async function fetchOrdersInRange(client, minDateModified, maxDateModified, customerId) {
   const allOrders = [];
   let page = 1;
 
   while (true) {
-    const pageOrders = await listOrders({
+    const pageOrders = await listOrders(client, {
       minDateModified,
       maxDateModified,
       customerId,
@@ -109,14 +128,14 @@ function buildAggregateKey(productId, variantId, sku, size) {
   return `${productId}::${variantId || 0}::${sku || ""}::${size}`;
 }
 
-async function fetchProductsByOrders(orders) {
+async function fetchProductsByOrders(client, orders) {
   const orderProducts = [];
 
   for (let i = 0; i < orders.length; i += PRODUCT_FETCH_CONCURRENCY) {
     const chunk = orders.slice(i, i + PRODUCT_FETCH_CONCURRENCY);
     const chunkResults = await Promise.all(
       chunk.map(async (order) => {
-        const products = await listOrderProducts(order.id);
+        const products = await listOrderProducts(client, order.id);
         return {
           orderId: order.id,
           products,
@@ -129,10 +148,12 @@ async function fetchProductsByOrders(orders) {
   return orderProducts;
 }
 
-async function getItemAllocation(payload) {
+async function getItemAllocation(payload, auth) {
   const { customerId, productIds, sizeSet } = validateAndNormalizePayload(payload);
+  const { storeHash, accessToken } = validateAndNormalizeBigcommerceAuth(auth);
+  const client = createBigcommerceClient({ storeHash, accessToken });
 
-  const hasHistoricalOrders = await hasCustomerHistoricalOrders(customerId);
+  const hasHistoricalOrders = await hasCustomerHistoricalOrders(client, customerId);
   if (!hasHistoricalOrders) {
     return {
       isNewCustomer: true,
@@ -141,13 +162,13 @@ async function getItemAllocation(payload) {
 
   const productIdSet = new Set(productIds);
   const { minDateModified, maxDateModified } = getLastThirtyDaysUtcRange();
-  const orders = await fetchOrdersInRange(minDateModified, maxDateModified, customerId);
+  const orders = await fetchOrdersInRange(client, minDateModified, maxDateModified, customerId);
 
   if (orders.length === 0) {
     return [];
   }
 
-  const orderProducts = await fetchProductsByOrders(orders);
+  const orderProducts = await fetchProductsByOrders(client, orders);
   const aggregate = new Map();
 
   for (const { products } of orderProducts) {

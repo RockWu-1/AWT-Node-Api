@@ -1,25 +1,19 @@
 const axios = require("axios");
 const { createHttpError } = require("../utils/http-error");
 
-const storeHash = process.env.BIGCOMMERCE_STORE_HASH;
-const accessToken = process.env.BIGCOMMERCE_ACCESS_TOKEN;
-
-if (!storeHash || !accessToken) {
-  // eslint-disable-next-line no-console
-  console.warn("Missing BIGCOMMERCE_STORE_HASH or BIGCOMMERCE_ACCESS_TOKEN in environment variables.");
+function createBigcommerceClient({ storeHash, accessToken }) {
+  return axios.create({
+    baseURL: `https://api.bigcommerce.com/stores/${storeHash}/v2`,
+    timeout: Number(process.env.BIGCOMMERCE_TIMEOUT_MS || 20000),
+    headers: {
+      "X-Auth-Token": accessToken,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+  });
 }
 
-const bigcommerceClient = axios.create({
-  baseURL: `https://api.bigcommerce.com/stores/${storeHash}/v2`,
-  timeout: Number(process.env.BIGCOMMERCE_TIMEOUT_MS || 20000),
-  headers: {
-    "X-Auth-Token": accessToken,
-    Accept: "application/json",
-    "Content-Type": "application/json",
-  },
-});
-
-async function listOrders({ minDateModified, maxDateModified, customerId, page, limit }) {
+async function listOrders(client, { minDateModified, maxDateModified, customerId, page, limit }) {
   try {
     const params = {
       sort: "date_modified:asc",
@@ -36,7 +30,7 @@ async function listOrders({ minDateModified, maxDateModified, customerId, page, 
       params.max_date_modified = maxDateModified;
     }
 
-    const response = await bigcommerceClient.get("/orders", { params });
+    const response = await client.get("/orders", { params });
 
     return response.data || [];
   } catch (error) {
@@ -45,9 +39,9 @@ async function listOrders({ minDateModified, maxDateModified, customerId, page, 
   }
 }
 
-async function listOrderProducts(orderId) {
+async function listOrderProducts(client, orderId) {
   try {
-    const response = await bigcommerceClient.get(`/orders/${orderId}/products`);
+    const response = await client.get(`/orders/${orderId}/products`);
     return response.data || [];
   } catch (error) {
     const detail = error.response?.data ? JSON.stringify(error.response.data) : error.message;
@@ -56,6 +50,7 @@ async function listOrderProducts(orderId) {
 }
 
 module.exports = {
+  createBigcommerceClient,
   listOrders,
   listOrderProducts,
 };
