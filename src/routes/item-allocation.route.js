@@ -4,7 +4,7 @@ const { getItemAllocation } = require("../services/item-allocation.service");
 const router = express.Router();
 
 function getBigcommerceAuthHeaders(req) {
-  const storeHash = req.header("store_hash");
+  const storeHash = req.header("store-hash");
   const accessToken = req.header("token");
 
   return { storeHash, accessToken };
